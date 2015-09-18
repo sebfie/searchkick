@@ -19,13 +19,13 @@ Plus:
 - easily personalize results for each user
 - autocomplete
 - “Did you mean” suggestions
-- works with ActiveRecord and Mongoid
+- works with ActiveRecord, Mongoid, and NoBrainer
 
 :speech_balloon: Get [handcrafted updates](http://chartkick.us7.list-manage.com/subscribe?u=952c861f99eb43084e0a49f98&id=6ea6541e8e&group[0][4]=true) for new features
 
-:tangerine: Battle-tested at [Instacart](https://www.instacart.com)
+:tangerine: Battle-tested at [Instacart](https://www.instacart.com/opensource)
 
-[![Build Status](https://travis-ci.org/ankane/searchkick.png?branch=master)](https://travis-ci.org/ankane/searchkick)
+[![Build Status](https://travis-ci.org/ankane/searchkick.svg?branch=master)](https://travis-ci.org/ankane/searchkick)
 
 We highly recommend tracking queries and conversions
 
@@ -64,7 +64,7 @@ Product.reindex
 And to query, use:
 
 ```ruby
-products = Product.search "2% Milk"
+products = Product.search "apples"
 products.each do |product|
   puts product.name
 end
@@ -77,7 +77,7 @@ Searchkick supports the complete [Elasticsearch Search API](http://www.elasticse
 Query like SQL
 
 ```ruby
-Product.search "2% Milk", where: {in_stock: true}, limit: 10, offset: 50
+Product.search "apples", where: {in_stock: true}, limit: 10, offset: 50
 ```
 
 Search specific fields
@@ -96,6 +96,7 @@ where: {
   store_id: {not: 2},         # not
   aisle_id: {not: [25, 30]},  # not in
   user_ids: {all: [1, 3]},    # all elements in array
+  category: /frozen .+/,      # regexp
   or: [
     [{in_stock: true}, {backordered: true}]
   ]
@@ -124,7 +125,7 @@ Boost important fields
 fields: ["title^10", "description"]
 ```
 
-Boost by the value of a field
+Boost by the value of a field (field must be numeric)
 
 ```ruby
 boost_by: [:orders_count] # give popular documents a little boost
@@ -134,8 +135,9 @@ boost_by: {orders_count: {factor: 10}} # default factor is 1
 Boost matching documents
 
 ```ruby
-boost_where: {user_id: 1} # default factor is 1000
-boost_where: {user_id: {value: 1, factor: 100}}
+boost_where: {user_id: 1}
+boost_where: {user_id: {value: 1, factor: 100}} # default factor is 1000
+boost_where: {user_id: [{value: 1, factor: 100}, {value: 2, factor: 200}]}
 ```
 
 [Conversions](#keep-getting-better) are also a great way to boost.
@@ -266,17 +268,27 @@ end
 
 ### Misspellings
 
-By default, Searchkick handles misspelled queries by returning results with an [edit distance](http://en.wikipedia.org/wiki/Levenshtein_distance) of one. To turn off this feature, use:
+By default, Searchkick handles misspelled queries by returning results with an [edit distance](http://en.wikipedia.org/wiki/Levenshtein_distance) of one.
+
+You can change this with:
+
+```ruby
+Product.search "zucini", misspellings: {edit_distance: 2} # zucchini
+```
+
+Or turn off misspellings with:
 
 ```ruby
 Product.search "zuchini", misspellings: false # no zucchini
 ```
 
-You can also change the edit distance with:
+Swapping two letters counts as two edits. To count the [transposition of two adjacent characters as a single edit](https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance), use:
 
 ```ruby
-Product.search "zucini", misspellings: {edit_distance: 2} # zucchini
+Product.search "mikl", misspellings: {transpositions: true} # milk
 ```
+
+This is planned to be the default in Searchkick 1.0.
 
 ### Indexing
 
@@ -354,6 +366,22 @@ There are three strategies for keeping the index synced with your database.
     searchkick callbacks: false
   end
   ```
+
+#### Associations
+
+Data is **not** automatically synced when an association is updated.  If this is desired, add a callback to reindex:
+
+```ruby
+class Image < ActiveRecord::Base
+  belongs_to :product
+
+  after_commit :reindex_product
+
+  def reindex_product
+    product.reindex # or reindex_async
+  end
+end
+```
 
 ### Keep Getting Better
 
@@ -521,7 +549,7 @@ Product.search "wingtips", facets: {size: {where: {color: "brandy"}}}
 Limit
 
 ```ruby
-Product.search "2% Milk", facets: {store_id: {limit: 10}}
+Product.search "apples", facets: {store_id: {limit: 10}}
 ```
 
 Ranges
@@ -553,7 +581,7 @@ Highlight the search query in the results.
 bands = Band.search "cinema", fields: [:name], highlight: true
 ```
 
-**Note:** The `fields` option is required.
+**Note:** The `fields` option is required, unless highlight options are given - see below.
 
 View the highlighted fields with:
 
@@ -569,13 +597,27 @@ To change the tag, use:
 Band.search "cinema", fields: [:name], highlight: {tag: "<strong>"}
 ```
 
+To highlight and search different fields, use:
+
+```ruby
+Band.search "cinema", fields: [:name], highlight: {fields: [:description]}
+```
+
+Additional options, including fragment size, can be specified for each field:
+
+```ruby
+Band.search "cinema", fields: [:name], highlight: {fields: {name: {fragment_size: 200}}}
+```
+
+You can find available highlight options in the [Elasticsearch reference](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/search-request-highlighting.html#_highlighted_fragments).
+
 ### Similar Items
 
 Find similar items.
 
 ```ruby
 product = Product.first
-product.similar(fields: ["name"])
+product.similar(fields: ["name"], where: {size: "12 oz"})
 ```
 
 ### Geospatial Searches
@@ -600,6 +642,36 @@ Bounded by a box
 
 ```ruby
 City.search "san", where: {location: {top_left: [38, -123], bottom_right: [37, -122]}}
+```
+
+### Boost By Distance
+
+Boost results by distance - closer results are boosted more
+
+```ruby
+City.search "san", boost_by_distance: {field: :location, origin: [37, -122]}
+```
+
+Also supports [additional options](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/query-dsl-function-score-query.html#_decay_functions)
+
+```ruby
+City.search "san", boost_by_distance: {field: :location, origin: [37, -122], function: :linear, scale: "30mi", decay: 0.5}
+```
+
+### Routing
+
+Searchkick supports [Elasticsearch’s routing feature](https://www.elastic.co/blog/customizing-your-document-routing).
+
+```ruby
+class Contact < ActiveRecord::Base
+  searchkick routing: :user_id
+end
+```
+
+Reindex and search with:
+
+```ruby
+Contact.search "John", routing: current_user.id
 ```
 
 ## Inheritance
@@ -657,7 +729,7 @@ Product.searchkick_index.tokens("dieg", analyzer: "searchkick_word_search")
 # ["dieg"] - match!!
 ```
 
-See the [complete list of analyzers](lib/searchkick/reindex.rb#L86).
+See the [complete list of analyzers](lib/searchkick/index.rb#L209).
 
 ## Deployment
 
@@ -703,15 +775,20 @@ rake searchkick:reindex CLASS=Product
 
 ### Performance
 
-For the best performance, add [Patron](https://github.com/toland/patron) to your Gemfile.
+For the best performance, add [Typhoeus](https://github.com/typhoeus/typhoeus) to your Gemfile.
 
 ```ruby
-gem 'patron'
+gem 'typhoeus'
 ```
 
-Searchkick will automatically use it.
+And create an initializer with:
 
-**Note:** Patron is not available for Windows.
+```ruby
+require "typhoeus/adapters/faraday"
+Ethon.logger = Logger.new("/dev/null")
+```
+
+**Note:** Typhoeus is not available for Windows.
 
 ### Automatic Failover
 
@@ -741,6 +818,8 @@ See [Production Rails](https://github.com/ankane/production_rails) for other goo
 
 Prefer to use the [Elasticsearch DSL](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/query-dsl-queries.html) but still want awesome features like zero-downtime reindexing?
 
+### Advanced Mapping
+
 Create a custom mapping:
 
 ```ruby
@@ -755,18 +834,6 @@ class Product < ActiveRecord::Base
 end
 ```
 
-And use the `query` option to search:
-
-```ruby
-products = Product.search query: {match: {name: "milk"}}
-```
-
-View the response with:
-
-```ruby
-products.response
-```
-
 To keep the mappings and settings generated by Searchkick, use:
 
 ```ruby
@@ -775,12 +842,27 @@ class Product < ActiveRecord::Base
 end
 ```
 
+### Advanced Search
+
+And use the `body` option to search:
+
+```ruby
+products = Product.search body: {match: {name: "milk"}}
+```
+
+View the response with:
+
+```ruby
+products.response
+```
+
 To modify the query generated by Searchkick, use:
 
 ```ruby
-query = Product.search "2% Milk", execute: false
-query.body[:query] = {match_all: {}}
-products = query.execute
+products =
+  Product.search "apples" do |body|
+    body[:query] = {match_all: {}}
+  end
 ```
 
 ## Reference
@@ -790,6 +872,27 @@ Reindex one record
 ```ruby
 product = Product.find 10
 product.reindex
+# or to reindex in the background
+product.reindex_async
+```
+
+Reindex more than one record without recreating the index
+
+```ruby
+# do this ...
+some_company.products.each { |p| p.reindex }
+# or this ...
+Product.searchkick_index.import(some_company.products)
+# don't do the following as it will recreate the index with some_company's products only
+some_company.products.reindex
+```
+
+Reindex large set of records in batches
+
+```ruby
+Product.where("id > 100000").find_in_batches do |batch|
+  Product.searchkick_index.import(batch)
+end
 ```
 
 Remove old indices
@@ -803,6 +906,14 @@ Use a different index name
 ```ruby
 class Product < ActiveRecord::Base
   searchkick index_name: "products_v2"
+end
+```
+
+Use a dynamic index name
+
+```ruby
+class Product < ActiveRecord::Base
+  searchkick index_name: -> { "#{name.tableize}-#{I18n.locale}" }
 end
 ```
 
@@ -864,20 +975,17 @@ class Product < ActiveRecord::Base
 end
 ```
 
-Reindex asynchronously
+Create index without importing
+
+```ruby
+Product.reindex(import: false)
+```
+
+Make fields unsearchable but include in the source
 
 ```ruby
 class Product < ActiveRecord::Base
-  searchkick callbacks: false
-
-  def reindex_async
-    # custom code to reindex
-  end
-
-  after_commit :reindex_async
-  # or for Mongoid
-  # after_save :reindex_async
-  # after_destroy :reindex_async
+  searchkick unsearchable: [:color]
 end
 ```
 
@@ -899,6 +1007,46 @@ Reindex all models - Rails only
 
 ```sh
 rake searchkick:reindex:all
+```
+
+Turn on misspellings after a certain number of characters
+
+```ruby
+Product.search "api", misspellings: {prefix_length: 2} # api, apt, no ahi
+```
+
+**Note:** With this option, if the query length is the same as `prefix_length`, misspellings are turned off
+
+```ruby
+Product.search "ah", misspellings: {prefix_length: 2} # ah, no aha
+```
+
+## Large Data Sets
+
+For large data sets, check out [Keeping Elasticsearch in Sync](https://www.found.no/foundation/keeping-elasticsearch-in-sync/).  Searchkick will make this easy in the future.
+
+## Testing
+
+This section could use some love.
+
+### RSpec
+
+```ruby
+describe Product do
+  it "searches" do
+    Product.reindex
+    Product.searchkick_index.refresh # don't forget this
+    # test goes here...
+  end
+end
+```
+
+### Factory Girl
+
+```ruby
+product = FactoryGirl.create(:product)
+product.reindex # don't forget this
+Product.searchkick_index.refresh # or this
 ```
 
 ## Migrating from Tire
@@ -965,12 +1113,13 @@ Thanks to Karel Minarik for [Elasticsearch Ruby](https://github.com/elasticsearc
 
 ## Roadmap
 
+- More features for large data sets
+- Improve section on testing
+- Semantic search features
 - Search multiple fields for different terms
 - Search across models
 - Search nested objects
-- Add section on testing
 - Much finer customization
-- More transparency into generated queries (for advanced use)
 
 ## Contributing
 
@@ -983,6 +1132,9 @@ Everyone is encouraged to help improve this project. Here are a few ways you can
 
 To get started with development and testing:
 
-1. Clone the repo
-2. `bundle`
-3. `rake test`
+```sh
+git clone https://github.com/ankane/searchkick.git
+cd searchkick
+bundle install
+rake test
+```

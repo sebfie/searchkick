@@ -1,3 +1,44 @@
+## 0.9.1
+
+- `and` now matches `&`
+- Added `transpositions` option to misspellings
+- Added `boost_mode` and `log` options to `boost_by`
+- Added `prefix_length` option to `misspellings`
+- Added ability to set env
+
+## 0.9.0
+
+- Much better performance for where queries if no facets
+- Added basic support for regex
+- Added support for routing
+- Made `Searchkick.disable_callbacks` thread-safe
+
+## 0.8.7
+
+- Fixed Mongoid import
+
+## 0.8.6
+
+- Added support for NoBrainer
+- Added `stem_conversions: false` option
+- Added support for multiple `boost_where` values on the same field
+- Added support for array of values for `boost_where`
+- Fixed suggestions with partial match boost
+- Fixed redefining existing instance methods in models
+
+## 0.8.5
+
+- Added support for Elasticsearch 1.4
+- Added `unsearchable` option
+- Added `select: true` option
+- Added `body` option
+
+## 0.8.4
+
+- Added `boost_by_distance`
+- More flexible highlight options
+- Better `env` logic
+
 ## 0.8.3
 
 - Added support for ActiveJob

@@ -8,7 +8,7 @@ class TestSql < Minitest::Test
   end
 
   def test_no_limit
-    names = 20.times.map{|i| "Product #{i}" }
+    names = 20.times.map { |i| "Product #{i}" }
     store_names names
     assert_search "product", names
   end
@@ -40,6 +40,7 @@ class TestSql < Minitest::Test
     assert !products.first_page?
     assert !products.last_page?
     assert !products.empty?
+    assert !products.out_of_range?
     assert products.any?
   end
 
@@ -57,7 +58,7 @@ class TestSql < Minitest::Test
       {name: "Product A", store_id: 1, in_stock: true, backordered: true, created_at: now, orders_count: 4, user_ids: [1, 2, 3]},
       {name: "Product B", store_id: 2, in_stock: true, backordered: false, created_at: now - 1, orders_count: 3, user_ids: [1]},
       {name: "Product C", store_id: 3, in_stock: false, backordered: true, created_at: now - 2, orders_count: 2, user_ids: [1, 3]},
-      {name: "Product D", store_id: 4, in_stock: false, backordered: false, created_at: now - 3, orders_count: 1},
+      {name: "Product D", store_id: 4, in_stock: false, backordered: false, created_at: now - 3, orders_count: 1}
     ]
     assert_search "product", ["Product A", "Product B"], where: {in_stock: true}
     # date
@@ -85,12 +86,22 @@ class TestSql < Minitest::Test
     assert_search "product", ["Product A", "Product C"], where: {user_ids: {all: [1, 3]}}
     assert_search "product", [], where: {user_ids: {all: [1, 2, 3, 4]}}
     # any / nested terms
-    assert_search "product", ["Product B", "Product C"], where: {user_ids: {not: [2], in: [1,3]}}
+    assert_search "product", ["Product B", "Product C"], where: {user_ids: {not: [2], in: [1, 3]}}
     # not / exists
     assert_search "product", ["Product D"], where: {user_ids: nil}
     assert_search "product", ["Product A", "Product B", "Product C"], where: {user_ids: {not: nil}}
     assert_search "product", ["Product A", "Product C", "Product D"], where: {user_ids: [3, nil]}
     assert_search "product", ["Product B"], where: {user_ids: {not: [3, nil]}}
+  end
+
+  def test_regexp
+    store_names ["Product A"]
+    assert_search "*", ["Product A"], where: {name: /Pro.+/}
+  end
+
+  def test_alternate_regexp
+    store_names ["Product A", "Item B"]
+    assert_search "*", ["Product A"], where: {name: {regexp: "Pro.+"}}
   end
 
   def test_where_string
@@ -233,6 +244,40 @@ class TestSql < Minitest::Test
     assert_search "aaaa", ["aabb"], misspellings: {distance: 2}
   end
 
+  def test_misspellings_prefix_length
+    store_names ["ap", "api", "apt", "any", "nap", "ah", "ahi"]
+    assert_search "ap", ["ap"], misspellings: {prefix_length: 2}
+    assert_search "api", ["ap", "api", "apt"], misspellings: {prefix_length: 2}
+  end
+
+  def test_misspellings_prefix_length_operator
+    store_names ["ap", "api", "apt", "any", "nap", "ah", "aha"]
+    assert_search "ap ah", ["ap", "ah"], operator: "or", misspellings: {prefix_length: 2}
+    assert_search "api ahi", ["ap", "api", "apt", "ah", "aha"], operator: "or", misspellings: {prefix_length: 2}
+  end
+
+  def test_misspellings_fields_operator
+    store [
+      {name: "red", color: "red"},
+      {name: "blue", color: "blue"},
+      {name: "cyan", color: "blue green"},
+      {name: "magenta", color: "red blue"},
+      {name: "green", color: "green"}
+    ]
+    assert_search "red blue", ["red", "blue", "cyan", "magenta"], operator: "or", fields: ["color"], misspellings: false
+  end
+
+  def test_fields_operator
+    store [
+      {name: "red", color: "red"},
+      {name: "blue", color: "blue"},
+      {name: "cyan", color: "blue green"},
+      {name: "magenta", color: "red blue"},
+      {name: "green", color: "green"}
+    ]
+    assert_search "red blue", ["red", "blue", "cyan", "magenta"], operator: "or", fields: ["color"]
+  end
+
   def test_fields
     store [
       {name: "red", color: "light blue"},
@@ -283,12 +328,24 @@ class TestSql < Minitest::Test
     assert_kind_of Hash, Product.search("product", load: false, include: [:store]).first
   end
 
+  # min_score
+
+   def test_min_score_default_to_zero
+    query = Product.search("milk", execute: false)
+    assert_equal 0, query.body[:min_score]
+  end
+
+  def test_should_use_min_score_param
+    query = Product.search({ query: { name: "milk"}, min_score: 1 }, execute: false)
+    assert_equal 1, query.body[:min_score]
+  end
+
   # select
 
   def test_select
     store [{name: "Product A", store_id: 1}]
     result = Product.search("product", load: false, select: [:name, :store_id]).first
-    assert_equal %w[id name store_id], result.keys.reject{|k| k.start_with?("_") }.sort
+    assert_equal %w[id name store_id], result.keys.reject { |k| k.start_with?("_") }.sort
     assert_equal ["Product A"], result.name # this is not great
   end
 
@@ -298,6 +355,13 @@ class TestSql < Minitest::Test
     assert_equal [1, 2], result.user_ids
   end
 
+  def test_select_all
+    store [{name: "Product A", user_ids: [1, 2]}]
+    hit = Product.search("product", select: true).hits.first
+    assert_equal hit["_source"]["name"], "Product A"
+    assert_equal hit["_source"]["user_ids"], [1, 2]
+  end
+
   def test_nested_object
     aisle = {"id" => 1, "name" => "Frozen"}
     store [{name: "Product A", aisle: aisle}]
@@ -305,7 +369,7 @@ class TestSql < Minitest::Test
   end
 
   # TODO see if Mongoid is loaded
-  if !defined?(Mongoid)
+  unless defined?(Mongoid) || defined?(NoBrainer)
     def test_include
       store_names ["Product A"]
       assert Product.search("product", include: [:store]).first.association(:store).loaded?

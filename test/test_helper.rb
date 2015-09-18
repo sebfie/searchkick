@@ -8,8 +8,10 @@ ENV["RACK_ENV"] = "test"
 
 Minitest::Test = Minitest::Unit::TestCase unless defined?(Minitest::Test)
 
-File.delete("elasticsearch.log") if File.exists?("elasticsearch.log")
+File.delete("elasticsearch.log") if File.exist?("elasticsearch.log")
 Searchkick.client.transport.logger = Logger.new("elasticsearch.log")
+
+puts "Running against Elasticsearch #{Searchkick.server_version}"
 
 I18n.config.enforce_available_locales = true
 
@@ -26,7 +28,7 @@ if defined?(Mongoid)
     module BSON
       class ObjectId
         def <=>(other)
-          self.data <=> other.data
+          data <=> other.data
         end
       end
     end
@@ -49,10 +51,12 @@ if defined?(Mongoid)
     field :in_stock, type: Boolean
     field :backordered, type: Boolean
     field :orders_count, type: Integer
+    field :found_rate, type: BigDecimal
     field :price, type: Integer
     field :color
     field :latitude, type: BigDecimal
     field :longitude, type: BigDecimal
+    field :description
   end
 
   class Store
@@ -65,6 +69,50 @@ if defined?(Mongoid)
     include Mongoid::Document
 
     field :name
+  end
+
+  class Dog < Animal
+  end
+
+  class Cat < Animal
+  end
+elsif defined?(NoBrainer)
+  NoBrainer.configure do |config|
+    config.app_name = :searchkick
+    config.environment = :test
+  end
+
+  class Product
+    include NoBrainer::Document
+    include NoBrainer::Document::Timestamps
+
+    field :id,           type: Object
+    field :name,         type: String
+    field :in_stock,     type: Boolean
+    field :backordered,  type: Boolean
+    field :orders_count, type: Integer
+    field :found_rate
+    field :price,        type: Integer
+    field :color,        type: String
+    field :latitude
+    field :longitude
+    field :description,  type: String
+
+    belongs_to :store, validates: false
+  end
+
+  class Store
+    include NoBrainer::Document
+
+    field :id,   type: Object
+    field :name, type: String
+  end
+
+  class Animal
+    include NoBrainer::Document
+
+    field :id,   type: Object
+    field :name, type: String
   end
 
   class Dog < Animal
@@ -85,17 +133,21 @@ else
   # migrations
   ActiveRecord::Base.establish_connection adapter: "sqlite3", database: ":memory:"
 
+  ActiveRecord::Base.raise_in_transactional_callbacks = true if ActiveRecord::Base.respond_to?(:raise_in_transactional_callbacks=)
+
   ActiveRecord::Migration.create_table :products do |t|
     t.string :name
     t.integer :store_id
     t.boolean :in_stock
     t.boolean :backordered
     t.integer :orders_count
+    t.decimal :found_rate
     t.integer :price
     t.string :color
     t.decimal :latitude, precision: 10, scale: 7
     t.decimal :longitude, precision: 10, scale: 7
-    t.timestamps
+    t.text :description
+    t.timestamps null: true
   end
 
   ActiveRecord::Migration.create_table :stores do |t|
@@ -146,7 +198,8 @@ class Product
     word_start: [:name],
     word_middle: [:name],
     word_end: [:name],
-    highlight: [:name]
+    highlight: [:name],
+    unsearchable: [:description]
 
   attr_accessor :conversions, :user_ids, :aisle
 
@@ -166,12 +219,15 @@ class Product
 end
 
 class Store
-  searchkick mappings: {
-    store: {
-      properties: {
-        name: {type: "string", analyzer: "keyword"}
+  searchkick \
+    routing: :name,
+    merge_mappings: true,
+    mappings: {
+      store: {
+        properties: {
+          name: {type: "string", analyzer: "keyword"},
+        }
       }
-    }
   }
 end
 
@@ -179,7 +235,7 @@ class Animal
   searchkick \
     autocomplete: [:name],
     suggest: [:name],
-    index_name: -> { "#{self.name.tableize}-#{Date.today.year}" }
+    index_name: -> { "#{name.tableize}-#{Date.today.year}" }
     # wordnet: true
 end
 
@@ -208,7 +264,7 @@ class Minitest::Test
   end
 
   def store_names(names, klass = Product)
-    store names.map{|name| {name: name} }, klass
+    store names.map { |name| {name: name} }, klass
   end
 
   # no order

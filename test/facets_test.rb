@@ -1,4 +1,5 @@
 require_relative "test_helper"
+require "active_support/core_ext"
 
 class TestFacets < Minitest::Test
 
@@ -18,6 +19,12 @@ class TestFacets < Minitest::Test
 
   def test_where
     assert_equal ({1 => 1}), store_facet(facets: {store_id: {where: {in_stock: true}}})
+  end
+
+  def test_field
+    assert_equal ({1 => 1, 2 => 2}), store_facet(facets: {store_id: {}})
+    assert_equal ({1 => 1, 2 => 2}), store_facet(facets: {store_id: {field: "store_id"}})
+    assert_equal ({1 => 1, 2 => 2}), store_facet({facets: {store_id_new: {field: "store_id"}}}, "store_id_new")
   end
 
   def test_limit
@@ -69,16 +76,73 @@ class TestFacets < Minitest::Test
   end
 
   def test_stats_facets
+    skip if Gem::Version.new(Searchkick.server_version) >= Gem::Version.new("1.4.0")
     options = {where: {store_id: 2}, facets: {store_id: {stats: true}}}
     facets = Product.search("Product", options).facets["store_id"]["terms"]
     expected_facets_keys = %w[term count total_count min max total mean]
     assert_equal expected_facets_keys, facets.first.keys
   end
 
+  # test min_score's effect
+
+  def test_facets_with_0_min_score
+    store_names ["Product1"]
+    assert_equal ({ "Product1" => 1, "Product Show" => 1, "Product Hide" => 1, "Product B" => 1}), store_facet({ facets: { name: {} }, min_score: 0 }, "name")
+  end
+
+  def test_facets_with_0_1_min_score
+    store_names ["Product1"]
+    assert_equal ({ "Product Show" => 1, "Product Hide" => 1, "Product B" => 1}), store_facet({ facets: { name: {} }, min_score: 0.1 }, "name")
+  end
+
+  # time grouping
+
+  def test_facets_group_by_date
+    store [{name: "Old Product", created_at: 3.years.ago}]
+    facets = Product.search(
+      "Product",
+      {
+        facets: {
+          products_per_year: {
+            date_histogram: {
+              field: :created_at,
+              interval: :year
+            }
+          }
+        }
+      }
+    ).facets
+
+    assert_equal 2, facets["products_per_year"]["entries"].size
+  end
+
+  def test_facets_group_by_date_with_value_field
+    store [{name: "Old Product", created_at: 3.years.ago, price: 100}]
+    facets = Product.search(
+      "Product",
+      {
+        facets: {
+          products_per_year: {
+            date_histogram: {
+              key_field: :created_at,
+              value_field: :price,
+              interval: :year
+            }
+          }
+        }
+      }
+    ).facets
+    entry_attributes = %w(time count min max total total_count mean)
+
+    entries = facets["products_per_year"]["entries"]
+    assert_equal 2, entries.size
+    assert_equal entry_attributes, entries.first.keys
+  end
+
   protected
 
-  def store_facet(options)
-    Hash[ Product.search("Product", options).facets["store_id"]["terms"].map{|v| [v["term"], v["count"]] } ]
+  def store_facet(options, facet_key="store_id")
+    Hash[Product.search("Product", options).facets[facet_key]["terms"].map { |v| [v["term"], v["count"]] }]
   end
 
 end

@@ -15,33 +15,24 @@ module Searchkick
       @options = options
     end
 
+    # experimental: may not make next release
+    def records
+      @records ||= results_query(klass, hits)
+    end
+
     def results
       @results ||= begin
         if options[:load]
           # results can have different types
           results = {}
 
-          hits.group_by{|hit, i| hit["_type"] }.each do |type, grouped_hits|
-            records = type.camelize.constantize
-            if options[:includes]
-              records = records.includes(options[:includes])
-            end
-            results[type] =
-              if records.respond_to?(:primary_key) and records.primary_key
-                # ActiveRecord
-                records.where(records.primary_key => grouped_hits.map{|hit| hit["_id"] }).to_a
-              elsif records.respond_to?(:all) and records.all.respond_to?(:for_ids)
-                # Mongoid 2
-                records.all.for_ids(grouped_hits.map{|hit| hit["_id"] }).to_a
-              else
-                # Mongoid 3+
-                records.queryable.for_ids(grouped_hits.map{|hit| hit["_id"] }).to_a
-              end
+          hits.group_by { |hit, i| hit["_type"] }.each do |type, grouped_hits|
+            results[type] = results_query(type.camelize.constantize, grouped_hits).to_a.index_by { |r| r.id.to_s }
           end
 
           # sort
           hits.map do |hit|
-            results[hit["_type"]].find{|r| r.id.to_s == hit["_id"].to_s }
+            results[hit["_type"]][hit["_id"].to_s]
           end.compact
         else
           hits.map do |hit|
@@ -60,7 +51,7 @@ module Searchkick
 
     def suggestions
       if response["suggest"]
-        response["suggest"].values.flat_map{|v| v.first["options"] }.sort_by{|o| -o["score"] }.map{|o| o["text"] }.uniq
+        response["suggest"].values.flat_map { |v| v.first["options"] }.sort_by { |o| -o["score"] }.map { |o| o["text"] }.uniq
       else
         raise "Pass `suggest: true` to the search method for suggestions"
       end
@@ -74,7 +65,7 @@ module Searchkick
       each_with_hit.map do |model, hit|
         details = {}
         if hit["highlight"]
-          details[:highlight] = Hash[ hit["highlight"].map{|k, v| [(options[:json] ? k : k.sub(/\.analyzed\z/, "")).to_sym, v.first] } ]
+          details[:highlight] = Hash[hit["highlight"].map { |k, v| [(options[:json] ? k : k.sub(/\.analyzed\z/, "")).to_sym, v.first] }]
         end
         [model, details]
       end
@@ -137,11 +128,43 @@ module Searchkick
       next_page.nil?
     end
 
-    protected
+    def out_of_range?
+      current_page > total_pages
+    end
 
     def hits
       @response["hits"]["hits"]
     end
 
+    private
+
+    def results_query(records, hits)
+      ids = hits.map { |hit| hit["_id"] }
+
+      if options[:includes]
+        records =
+          if defined?(NoBrainer::Document) && records < NoBrainer::Document
+            records.preload(options[:includes])
+          else
+            records.includes(options[:includes])
+          end
+      end
+
+      if records.respond_to?(:primary_key) && records.primary_key
+        # ActiveRecord
+        records.where(records.primary_key => ids)
+      elsif records.respond_to?(:all) && records.all.respond_to?(:for_ids)
+        # Mongoid 2
+        records.all.for_ids(ids)
+      elsif records.respond_to?(:queryable)
+        # Mongoid 3+
+        records.queryable.for_ids(ids)
+      elsif records.respond_to?(:unscoped) && records.all.respond_to?(:preload)
+        # Nobrainer
+        records.unscoped.where(:id.in => ids)
+      else
+        raise "Not sure how to load records"
+      end
+    end
   end
 end
