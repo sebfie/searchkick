@@ -95,6 +95,50 @@ class TestFacets < Minitest::Test
     assert_equal ({ "Product Show" => 1, "Product Hide" => 1, "Product B" => 1}), store_facet({ facets: { name: {} }, min_score: 0.1 }, "name")
   end
 
+  # time grouping
+
+  def test_facets_group_by_date
+    store [{name: "Old Product", created_at: 3.years.ago}]
+    facets = Product.search(
+      "Product",
+      {
+        facets: {
+          products_per_year: {
+            date_histogram: {
+              field: :created_at,
+              interval: :year
+            }
+          }
+        }
+      }
+    ).facets
+
+    assert_equal 2, facets["products_per_year"]["entries"].size
+  end
+
+  def test_facets_group_by_date_with_value_field
+    store [{name: "Old Product", created_at: 3.years.ago, price: 100}]
+    facets = Product.search(
+      "Product",
+      {
+        facets: {
+          products_per_year: {
+            date_histogram: {
+              key_field: :created_at,
+              value_field: :price,
+              interval: :year
+            }
+          }
+        }
+      }
+    ).facets
+    entry_attributes = %w(time count min max total total_count mean)
+
+    entries = facets["products_per_year"]["entries"]
+    assert_equal 2, entries.size
+    assert_equal entry_attributes, entries.first.keys
+  end
+
   protected
 
   def store_facet(options, facet_key="store_id")

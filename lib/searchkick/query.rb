@@ -301,6 +301,24 @@ module Searchkick
                   all_terms: facet_options[:all_terms] || false
                 }
               }
+            elsif histogram = facet_options[:date_histogram]
+              interval = histogram[:interval]
+              if histogram[:field]
+                payload[:facets][field] = {
+                  date_histogram: {
+                    field: histogram[:field],
+                    interval: interval
+                  }
+                }
+              elsif histogram[:key_field]
+                payload[:facets][field] = {
+                  date_histogram: {
+                    key_field: histogram[:key_field],
+                    value_field: histogram[:value_field],
+                    interval: interval
+                  }
+                }
+              end
             else
               payload[:facets][field] = {
                 terms: {
